@@ -223,13 +223,18 @@ def get_or_create_sheet():
     sh = client.open_by_key(sheet_id)
     try:
         ws = sh.worksheet("Remarques")
+        # Vérifie que les en-têtes sont corrects, sinon les recrée
+        headers = ws.row_values(1)
+        expected = ["ID", "Date", "Heure", "Tranche", "Immeuble", "Local",
+                    "Zone", "Metier", "Priorite", "Designation",
+                    "Commentaire", "Photos_B64", "Nb_Photos", "Saisi_par"]
+        if not headers or headers[0] != "ID":
+            ws.insert_row(expected, 1)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet("Remarques", rows=5000, cols=14)
-        ws.append_row([
-            "ID", "Date", "Heure", "Tranche", "Immeuble", "Local",
-            "Zone", "Métier", "Priorité", "Désignation",
-            "Commentaire", "Photos_Base64", "Nb_Photos", "Saisi_par"
-        ])
+        ws.append_row(["ID", "Date", "Heure", "Tranche", "Immeuble", "Local",
+                       "Zone", "Metier", "Priorite", "Designation",
+                       "Commentaire", "Photos_B64", "Nb_Photos", "Saisi_par"])
     return ws
 
 def image_to_base64(img_bytes: bytes, max_size: int = 800) -> str:
@@ -244,6 +249,19 @@ def image_to_base64(img_bytes: bytes, max_size: int = 800) -> str:
 
 def save_remark_to_sheet(row_data: dict):
     ws = get_or_create_sheet()
+    # Chaque photo JPEG 800px ~ 30-50KB en base64. On limite à 1 photo si trop grand
+    photos_b64 = row_data.get("photos_b64", "")
+    parts = [p for p in photos_b64.split("||") if p.strip()]
+    # Garder au max ce qui tient dans 49000 chars (limite cellule Google Sheets)
+    kept = []
+    total = 0
+    for p in parts:
+        if total + len(p) < 49000:
+            kept.append(p)
+            total += len(p)
+        else:
+            break
+    photos_b64_safe = "||".join(kept)
     ws.append_row([
         row_data.get("id", ""),
         row_data.get("date", ""),
@@ -256,8 +274,8 @@ def save_remark_to_sheet(row_data: dict):
         row_data.get("priorite", ""),
         row_data.get("designation", ""),
         row_data.get("commentaire", ""),
-        row_data.get("photos_b64", ""),
-        row_data.get("nb_photos", 0),
+        photos_b64_safe,
+        len(kept),
         row_data.get("saisi_par", "—"),
     ])
 
@@ -265,7 +283,28 @@ def save_remark_to_sheet(row_data: dict):
 def load_remarks_from_sheet():
     ws = get_or_create_sheet()
     data = ws.get_all_records()
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+    if df.empty:
+        return df
+    # Normalize column names — map whatever is in Sheet to standard names
+    col_map = {
+        # possible variations → standard name
+        "Metier": "Métier", "métier": "Métier", "METIER": "Métier",
+        "Priorite": "Priorité", "priorité": "Priorité", "PRIORITE": "Priorité",
+        "Designation": "Désignation", "désignation": "Désignation",
+        "Saisi_par": "Saisi_par",
+        "Photos_Base64": "Photos_B64", "photos_b64": "Photos_B64",
+        "Photos_b64": "Photos_B64",
+        "Nb_photos": "Nb_Photos", "nb_photos": "Nb_Photos",
+    }
+    df = df.rename(columns=col_map)
+    # Ensure all expected columns exist
+    for col in ["Métier", "Priorité", "Désignation", "Commentaire",
+                "Photos_B64", "Nb_Photos", "Saisi_par", "Zone",
+                "Tranche", "Immeuble", "Local", "Date", "Heure"]:
+        if col not in df.columns:
+            df[col] = ""
+    return df
 
 # ─────────────────────────────────────────────
 #  GÉNÉRATION PDF avec reportlab
@@ -429,7 +468,7 @@ def generate_pdf_report(df: pd.DataFrame, filters: dict) -> bytes:
                 block.append(commentaire_p)
 
             # Photos base64
-            photos_b64_raw = str(row.get("Photos_Base64", "")).strip()
+            photos_b64_raw = str(row.get("Photos_B64", "")).strip()
             if photos_b64_raw and photos_b64_raw != "nan":
                 b64_list = [p.strip() for p in photos_b64_raw.split("||") if p.strip()]
                 if b64_list:
@@ -668,7 +707,8 @@ elif page == "📊 Rapport / Consultation":
     with k4:
         st.markdown(f"<div class='metric-card'><div class='num'>{dff['Métier'].nunique()}</div><div class='lbl'>Corps de métier</div></div>", unsafe_allow_html=True)
     with k5:
-        with_photos = dff["Nb_Photos"].apply(lambda x: int(str(x)) > 0 if str(x).isdigit() else False).sum()
+        nb_photos_col = dff["Nb_Photos"] if "Nb_Photos" in dff.columns else pd.Series([0]*len(dff))
+        with_photos = nb_photos_col.apply(lambda x: int(str(x)) > 0 if str(x).strip().isdigit() else False).sum()
         st.markdown(f"<div class='metric-card'><div class='num'>{with_photos}</div><div class='lbl'>Avec photos</div></div>", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -699,7 +739,7 @@ elif page == "📊 Rapport / Consultation":
                     """, unsafe_allow_html=True)
 
                     # Afficher les photos base64
-                    photos_raw = str(row.get("Photos_Base64", "")).strip()
+                    photos_raw = str(row.get("Photos_B64", "")).strip()
                     if photos_raw and photos_raw not in ("", "nan"):
                         b64_list = [p.strip() for p in photos_raw.split("||") if p.strip()]
                         if b64_list:

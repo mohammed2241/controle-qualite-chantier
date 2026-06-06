@@ -237,14 +237,19 @@ def get_or_create_sheet():
                        "Commentaire", "Photos_B64", "Nb_Photos", "Saisi_par"])
     return ws
 
-def image_to_base64(img_bytes: bytes, max_size: int = 800) -> str:
-    """Resize + compress image and return base64 string."""
+def image_to_base64(img_bytes: bytes, max_size: int = 600) -> str:
+    """Resize + compress image and return base64 string (max ~30KB)."""
     img = Image.open(io.BytesIO(img_bytes))
     img.thumbnail((max_size, max_size), Image.LANCZOS)
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=60)
+    img.save(buf, format="JPEG", quality=45)
+    # Si encore trop grand, réduire davantage
+    if buf.tell() > 30000:
+        buf = io.BytesIO()
+        img.thumbnail((400, 400), Image.LANCZOS)
+        img.save(buf, format="JPEG", quality=35)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def save_remark_to_sheet(row_data: dict):
@@ -288,14 +293,21 @@ def load_remarks_from_sheet():
         return df
     # Normalize column names — map whatever is in Sheet to standard names
     col_map = {
-        # possible variations → standard name
+        # Noms de colonnes possibles → noms standards utilisés dans le code
         "Metier": "Métier", "métier": "Métier", "METIER": "Métier",
         "Priorite": "Priorité", "priorité": "Priorité", "PRIORITE": "Priorité",
-        "Designation": "Désignation", "désignation": "Désignation",
-        "Saisi_par": "Saisi_par",
-        "Photos_Base64": "Photos_B64", "photos_b64": "Photos_B64",
+        "Designation": "Désignation", "désignation": "Désignation", "DESIGNATION": "Désignation",
+        "Commentaire": "Commentaire",
+        "Saisi_par": "Saisi_par", "saisi_par": "Saisi_par",
+        # Toutes les variantes possibles du champ photos
+        "Photos_URLs": "Photos_B64",
+        "Photos_URL": "Photos_B64",
+        "Photos_Base64": "Photos_B64",
+        "photos_b64": "Photos_B64",
         "Photos_b64": "Photos_B64",
-        "Nb_photos": "Nb_Photos", "nb_photos": "Nb_Photos",
+        "PHOTOS": "Photos_B64",
+        # Nb photos
+        "Nb_photos": "Nb_Photos", "nb_photos": "Nb_Photos", "NB_PHOTOS": "Nb_Photos",
     }
     df = df.rename(columns=col_map)
     # Ensure all expected columns exist

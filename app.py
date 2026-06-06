@@ -7,8 +7,15 @@ import base64
 from PIL import Image
 import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import cm
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    HRFlowable, Image as RLImage, KeepTogether
+)
+from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 
 # ─────────────────────────────────────────────
 #  PAGE CONFIG
@@ -25,7 +32,6 @@ st.set_page_config(
 # ─────────────────────────────────────────────
 st.markdown("""
 <style>
-  /* Main palette */
   :root {
     --accent: #1D9E75;
     --accent-light: #E1F5EE;
@@ -35,175 +41,126 @@ st.markdown("""
     --danger: #A32D2D;
     --danger-light: #FCEBEB;
   }
-
-  /* Header */
   .main-header {
     background: linear-gradient(135deg, #085041 0%, #1D9E75 100%);
-    color: white;
-    padding: 1.2rem 1.5rem;
-    border-radius: 12px;
-    margin-bottom: 1.5rem;
-    display: flex;
-    align-items: center;
-    gap: 12px;
+    color: white; padding: 1.2rem 1.5rem; border-radius: 12px;
+    margin-bottom: 1.5rem; display: flex; align-items: center; gap: 12px;
   }
   .main-header h1 { color: white; font-size: 1.4rem; margin: 0; }
   .main-header p  { color: rgba(255,255,255,0.8); margin: 0; font-size: 0.85rem; }
-
-  /* Cards */
-  .metric-card {
-    background: #f8f9fa;
-    border: 1px solid #e9ecef;
-    border-radius: 10px;
-    padding: 1rem;
-    text-align: center;
-  }
+  .metric-card { background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 10px; padding: 1rem; text-align: center; }
   .metric-card .num { font-size: 2rem; font-weight: 700; color: #1D9E75; }
   .metric-card .lbl { font-size: 0.8rem; color: #6c757d; }
-
-  /* Remark card */
-  .remark-card {
-    background: white;
-    border: 1px solid #e9ecef;
-    border-left: 4px solid #1D9E75;
-    border-radius: 8px;
-    padding: 1rem 1.2rem;
-    margin-bottom: 0.8rem;
-  }
-  .badge {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 20px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    margin-right: 4px;
-  }
+  .remark-card { background: white; border: 1px solid #e9ecef; border-left: 4px solid #1D9E75; border-radius: 8px; padding: 1rem 1.2rem; margin-bottom: 0.8rem; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; margin-right: 4px; }
   .badge-imm  { background: #E6F1FB; color: #0C447C; }
   .badge-apt  { background: #f0f0f0; color: #444; }
   .badge-met  { background: #E1F5EE; color: #085041; }
   .badge-zone { background: #FAEEDA; color: #633806; }
-
-  /* Section title */
-  .section-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 0;
-    border-bottom: 2px solid #1D9E75;
-    margin-bottom: 1rem;
-    color: #085041;
-    font-weight: 600;
-    font-size: 1rem;
-  }
-
-  /* Photo grid */
-  .photo-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-  .photo-grid img {
-    width: 80px; height: 80px;
-    object-fit: cover;
-    border-radius: 6px;
-    border: 1px solid #dee2e6;
-    cursor: pointer;
-  }
-
-  /* Hide Streamlit branding */
-  #MainMenu {visibility: hidden;}
-  footer {visibility: hidden;}
-  .stDeployButton {display: none;}
+  .section-header { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 2px solid #1D9E75; margin-bottom: 1rem; color: #085041; font-weight: 600; font-size: 1rem; }
+  #MainMenu {visibility: hidden;} footer {visibility: hidden;} .stDeployButton {display: none;}
 </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-#  STRUCTURE DES TRANCHES / IMMEUBLES / APPARTS
+#  STRUCTURE DES TRANCHES
 # ─────────────────────────────────────────────
 def build_structure():
-    """
-    Returns dict: tranche -> immeuble -> list of locals
-    """
     structure = {}
 
-    # ── TRANCHE 3 ─────────────────────────────
+    # ── TRANCHE 3 — 10 immeubles A→J ──────────
     t3 = {}
-    # A-J : Magasins + 3 niveaux 2 appart/étage
+
+    # A, J : Magasins + 3 niveaux, 2 apparts/étage
     for letter in ["A", "J"]:
-        imm = f"Immeuble {letter}"
         locs = ["Magasins (RDC)"]
+        n = 1
         for etage in range(1, 4):
             for apt in range(1, 3):
-                locs.append(f"Étage {etage} – Appt {letter}{etage:02d}{apt}")
+                locs.append(f"Étage {etage} – Appt {n:02d}")
+                n += 1
         locs.append("Parties communes")
-        t3[imm] = locs
+        t3[f"Immeuble {letter}"] = locs
 
-    # B-E-F-I : Magasins + 5 niveaux (3×3 appts + 2×2 appts)
+    # B, E, F, I : Magasins + 5 niveaux (3 étages ×3 appts + 2 étages ×2 appts)
     for letter in ["B", "E", "F", "I"]:
-        imm = f"Immeuble {letter}"
         locs = ["Magasins (RDC)"]
-        for etage in range(1, 4):          # étages 1-3 : 3 appts
+        n = 1
+        for etage in range(1, 4):
             for apt in range(1, 4):
-                locs.append(f"Étage {etage} – Appt {letter}{etage:02d}{apt}")
-        for etage in range(4, 6):          # étages 4-5 : 2 appts
+                locs.append(f"Étage {etage} – Appt {n:02d}")
+                n += 1
+        for etage in range(4, 6):
             for apt in range(1, 3):
-                locs.append(f"Étage {etage} – Appt {letter}{etage:02d}{apt}")
+                locs.append(f"Étage {etage} – Appt {n:02d}")
+                n += 1
         locs.append("Parties communes")
-        t3[imm] = locs
+        t3[f"Immeuble {letter}"] = locs
 
-    # C-D-G-H : Magasins + 5 niveaux (3×3 + 1×2 + 1×1)
+    # C, D, G, H : Magasins + 5 niveaux (3×3 + 1×2 + 1×1)
     for letter in ["C", "D", "G", "H"]:
-        imm = f"Immeuble {letter}"
         locs = ["Magasins (RDC)"]
-        for etage in range(1, 4):          # 1-3 : 3 appts
+        n = 1
+        for etage in range(1, 4):
             for apt in range(1, 4):
-                locs.append(f"Étage {etage} – Appt {letter}{etage:02d}{apt}")
-        for apt in range(1, 3):            # 4ème : 2 appts
-            locs.append(f"Étage 4 – Appt {letter}04{apt}")
-        locs.append(f"Étage 5 – Appt {letter}051")   # 5ème : 1 appt
+                locs.append(f"Étage {etage} – Appt {n:02d}")
+                n += 1
+        for apt in range(1, 3):
+            locs.append(f"Étage 4 – Appt {n:02d}")
+            n += 1
+        locs.append(f"Étage 5 – Appt {n:02d}")
         locs.append("Parties communes")
-        t3[imm] = locs
+        t3[f"Immeuble {letter}"] = locs
 
     structure["Tranche 3"] = t3
 
-    # ── TRANCHE 4 ─────────────────────────────
+    # ── TRANCHE 4 — 4 immeubles A→D ───────────
     t4 = {}
-    # A-D : Magasins + 5 niveaux (3×3 + 2×2)
+
+    # A, D : Magasins + 5 niveaux (3×3 + 2×2)
     for letter in ["A", "D"]:
-        imm = f"Immeuble {letter}"
         locs = ["Magasins (RDC)"]
+        n = 1
         for etage in range(1, 4):
             for apt in range(1, 4):
-                locs.append(f"Étage {etage} – Appt {letter}{etage:02d}{apt}")
+                locs.append(f"Étage {etage} – Appt {n:02d}")
+                n += 1
         for etage in range(4, 6):
             for apt in range(1, 3):
-                locs.append(f"Étage {etage} – Appt {letter}{etage:02d}{apt}")
+                locs.append(f"Étage {etage} – Appt {n:02d}")
+                n += 1
         locs.append("Parties communes")
-        t4[imm] = locs
+        t4[f"Immeuble {letter}"] = locs
 
-    # B-C : Magasins + 5 niveaux (3×3 + 1×2 + 1×1)
+    # B, C : Magasins + 5 niveaux (3×3 + 1×2 + 1×1)
     for letter in ["B", "C"]:
-        imm = f"Immeuble {letter}"
         locs = ["Magasins (RDC)"]
+        n = 1
         for etage in range(1, 4):
             for apt in range(1, 4):
-                locs.append(f"Étage {etage} – Appt {letter}{etage:02d}{apt}")
+                locs.append(f"Étage {etage} – Appt {n:02d}")
+                n += 1
         for apt in range(1, 3):
-            locs.append(f"Étage 4 – Appt {letter}04{apt}")
-        locs.append(f"Étage 5 – Appt {letter}051")
+            locs.append(f"Étage 4 – Appt {n:02d}")
+            n += 1
+        locs.append(f"Étage 5 – Appt {n:02d}")
         locs.append("Parties communes")
-        t4[imm] = locs
+        t4[f"Immeuble {letter}"] = locs
 
     structure["Tranche 4"] = t4
 
-    # ── TRANCHE 5 ─────────────────────────────
-    # 20 immeubles, 5 niveaux, 3 apparts/étage
+    # ── TRANCHE 5 — 20 immeubles A→T, 5 niveaux, 3 appts/étage ──
     t5 = {}
-    letters = [chr(65 + i) for i in range(20)]  # A-T
-    for letter in letters:
-        imm = f"Immeuble {letter}"
+    for i in range(20):
+        letter = chr(65 + i)
         locs = []
+        n = 1
         for etage in range(1, 6):
             for apt in range(1, 4):
-                locs.append(f"Étage {etage} – Appt {letter}{etage:02d}{apt}")
+                locs.append(f"Étage {etage} – Appt {n:02d}")
+                n += 1
         locs.append("Parties communes")
-        t5[imm] = locs
+        t5[f"Immeuble {letter}"] = locs
     structure["Tranche 5"] = t5
 
     return structure
@@ -216,27 +173,39 @@ METIERS = [
     ("⚡", "Électricité"),
     ("🔧", "Plomberie"),
     ("🖌️", "Plâtrerie & Peinture"),
+    ("🎨", "Peinture"),
     ("🧱", "Bardage"),
     ("⬛", "Carrelage"),
+    ("🍽️", "Cuisine"),
+    ("🪨", "Marbre"),
     ("☔", "Étanchéité"),
-    ("🏗️", "Gros œuvre"),
-    ("🔒", "Serrurerie"),
-    ("🪴", "Espaces verts"),
-    ("🛗",  "Ascenseur"),
+    ("🛗", "Ascenseur"),
 ]
 
 ZONES = [
     "— Zone optionnelle —",
-    "Salon / Séjour", "Cuisine", "Chambre 1", "Chambre 2", "Chambre 3",
-    "Salle de bain", "WC", "Couloir / Dégagement",
-    "Balcon / Terrasse", "Façade extérieure", "Toiture",
-    "Sous-sol / Cave", "Parking", "Parties communes", "Cage d'escalier",
+    "Cuisine",
+    "Salon",
+    "Chambre 1",
+    "Chambre 2",
+    "Suite parentale",
+    "Lave-mains",
+    "Salle de bain",
+    "Salle de bain suite parentale",
+    "Terrasse",
+    "Couloir / Dégagement",
+    "Balcon",
+    "Façade extérieure",
+    "Toiture",
+    "Parking / Sous-sol",
+    "Parties communes",
+    "Cage d'escalier",
 ]
 
 PRIORITES = {"🔴 Urgent": "Urgent", "🟡 Normal": "Normal", "🟢 Mineur": "Mineur"}
 
 # ─────────────────────────────────────────────
-#  GOOGLE SHEETS / DRIVE CONNECTION
+#  GOOGLE SHEETS — photos en base64 dans Sheet
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_gspread_client():
@@ -246,29 +215,32 @@ def get_gspread_client():
     ]
     creds_dict = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return gspread.authorize(creds), creds
-
-@st.cache_resource
-def get_drive_service():
-    scopes = ["https://www.googleapis.com/auth/drive"]
-    creds_dict = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return build("drive", "v3", credentials=creds)
+    return gspread.authorize(creds)
 
 def get_or_create_sheet():
-    client, _ = get_gspread_client()
+    client = get_gspread_client()
     sheet_id = st.secrets["SHEET_ID"]
     sh = client.open_by_key(sheet_id)
     try:
         ws = sh.worksheet("Remarques")
     except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet("Remarques", rows=5000, cols=15)
+        ws = sh.add_worksheet("Remarques", rows=5000, cols=14)
         ws.append_row([
             "ID", "Date", "Heure", "Tranche", "Immeuble", "Local",
             "Zone", "Métier", "Priorité", "Désignation",
-            "Commentaire", "Photos_URLs", "Saisi_par"
+            "Commentaire", "Photos_Base64", "Nb_Photos", "Saisi_par"
         ])
     return ws
+
+def image_to_base64(img_bytes: bytes, max_size: int = 800) -> str:
+    """Resize + compress image and return base64 string."""
+    img = Image.open(io.BytesIO(img_bytes))
+    img.thumbnail((max_size, max_size), Image.LANCZOS)
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=60)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def save_remark_to_sheet(row_data: dict):
     ws = get_or_create_sheet()
@@ -284,30 +256,242 @@ def save_remark_to_sheet(row_data: dict):
         row_data.get("priorite", ""),
         row_data.get("designation", ""),
         row_data.get("commentaire", ""),
-        row_data.get("photos_urls", ""),
-        row_data.get("saisi_par", ""),
+        row_data.get("photos_b64", ""),
+        row_data.get("nb_photos", 0),
+        row_data.get("saisi_par", "—"),
     ])
 
+@st.cache_data(ttl=30)
 def load_remarks_from_sheet():
     ws = get_or_create_sheet()
     data = ws.get_all_records()
     return pd.DataFrame(data)
 
-def upload_photo_to_drive(image_bytes: bytes, filename: str, folder_id: str) -> str:
-    service = get_drive_service()
-    file_meta = {"name": filename, "parents": [folder_id]}
-    media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/jpeg")
-    f = service.files().create(body=file_meta, media_body=media, fields="id").execute()
-    file_id = f.get("id")
-    # Make public
-    service.permissions().create(
-        fileId=file_id,
-        body={"type": "anyone", "role": "reader"},
-    ).execute()
-    return f"https://drive.google.com/uc?export=view&id={file_id}"
+# ─────────────────────────────────────────────
+#  GÉNÉRATION PDF avec reportlab
+# ─────────────────────────────────────────────
+def generate_pdf_report(df: pd.DataFrame, filters: dict) -> bytes:
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        rightMargin=1.8*cm, leftMargin=1.8*cm,
+        topMargin=2*cm, bottomMargin=2*cm,
+        title="Rapport Contrôle Qualité",
+    )
+
+    W, H = A4
+    styles = getSampleStyleSheet()
+
+    # Styles personnalisés
+    title_style = ParagraphStyle("title", parent=styles["Title"],
+        fontSize=16, textColor=colors.HexColor("#085041"),
+        spaceAfter=4, alignment=TA_CENTER)
+    subtitle_style = ParagraphStyle("subtitle", parent=styles["Normal"],
+        fontSize=9, textColor=colors.HexColor("#555555"),
+        spaceAfter=2, alignment=TA_CENTER)
+    metier_style = ParagraphStyle("metier", parent=styles["Heading2"],
+        fontSize=12, textColor=colors.white,
+        spaceAfter=0, spaceBefore=0, leading=16)
+    label_style = ParagraphStyle("label", parent=styles["Normal"],
+        fontSize=8, textColor=colors.HexColor("#666666"),
+        spaceAfter=1)
+    value_style = ParagraphStyle("value", parent=styles["Normal"],
+        fontSize=9, textColor=colors.HexColor("#1a1a1a"),
+        spaceAfter=2)
+    comment_style = ParagraphStyle("comment", parent=styles["Normal"],
+        fontSize=9, textColor=colors.HexColor("#333333"),
+        spaceAfter=4, leading=13)
+    footer_style = ParagraphStyle("footer", parent=styles["Normal"],
+        fontSize=7, textColor=colors.HexColor("#aaaaaa"), alignment=TA_CENTER)
+
+    ACCENT     = colors.HexColor("#1D9E75")
+    ACCENT_BG  = colors.HexColor("#E1F5EE")
+    DARK       = colors.HexColor("#085041")
+    AMBER      = colors.HexColor("#BA7517")
+    AMBER_BG   = colors.HexColor("#FAEEDA")
+    RED        = colors.HexColor("#A32D2D")
+    RED_BG     = colors.HexColor("#FCEBEB")
+    GRAY_BG    = colors.HexColor("#f5f5f5")
+
+    PRIO_COLOR = {"Urgent": (RED, RED_BG), "Normal": (AMBER, AMBER_BG), "Mineur": (ACCENT, ACCENT_BG)}
+
+    story = []
+
+    # ── En-tête ────────────────────────────────
+    header_data = [[
+        Paragraph("<b>RAPPORT CONTRÔLE QUALITÉ CHANTIER</b>", title_style),
+    ]]
+    header_table = Table(header_data, colWidths=[W - 3.6*cm])
+    header_table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), DARK),
+        ("TOPPADDING",    (0,0), (-1,-1), 14),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 14),
+        ("LEFTPADDING",   (0,0), (-1,-1), 16),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 16),
+        ("ROUNDEDCORNERS", [6]),
+    ]))
+    story.append(header_table)
+    story.append(Spacer(1, 6))
+
+    date_str = datetime.now().strftime("%d/%m/%Y à %H:%M")
+    story.append(Paragraph(f"Généré le {date_str}", subtitle_style))
+    story.append(Spacer(1, 4))
+
+    # Filtres appliqués
+    filter_parts = []
+    if filters.get("tranche") and filters["tranche"] != "Toutes":
+        filter_parts.append(f"Tranche : {filters['tranche']}")
+    if filters.get("immeuble") and filters["immeuble"] != "Tous":
+        filter_parts.append(f"Immeuble : {filters['immeuble']}")
+    if filters.get("metier") and filters["metier"] != "Tous":
+        filter_parts.append(f"Métier : {filters['metier']}")
+    if filter_parts:
+        story.append(Paragraph("Filtres : " + "  |  ".join(filter_parts), subtitle_style))
+
+    story.append(Spacer(1, 8))
+
+    # ── KPIs ───────────────────────────────────
+    nb_urgent = len(df[df.get("Priorité", pd.Series(dtype=str)) == "Urgent"]) if "Priorité" in df.columns else 0
+    kpi_data = [[
+        Paragraph(f"<b>{len(df)}</b><br/><font size='7' color='#666'>Total remarques</font>", value_style),
+        Paragraph(f"<b>{df['Immeuble'].nunique() if 'Immeuble' in df.columns else 0}</b><br/><font size='7' color='#666'>Immeubles</font>", value_style),
+        Paragraph(f"<b>{df['Métier'].nunique() if 'Métier' in df.columns else 0}</b><br/><font size='7' color='#666'>Corps de métier</font>", value_style),
+        Paragraph(f"<b><font color='#A32D2D'>{nb_urgent}</font></b><br/><font size='7' color='#666'>Urgentes</font>", value_style),
+    ]]
+    kpi_table = Table(kpi_data, colWidths=[(W - 3.6*cm)/4]*4)
+    kpi_table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), GRAY_BG),
+        ("ALIGN", (0,0), (-1,-1), "CENTER"),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+        ("TOPPADDING",    (0,0), (-1,-1), 10),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 10),
+        ("GRID", (0,0), (-1,-1), 0.3, colors.HexColor("#dddddd")),
+        ("ROUNDEDCORNERS", [4]),
+    ]))
+    story.append(kpi_table)
+    story.append(Spacer(1, 14))
+    story.append(HRFlowable(width="100%", thickness=1, color=ACCENT))
+    story.append(Spacer(1, 10))
+
+    # ── Remarques groupées par métier ──────────
+    metiers_present = df["Métier"].dropna().unique() if "Métier" in df.columns else []
+
+    for metier in sorted(metiers_present):
+        sub = df[df["Métier"] == metier]
+
+        # Titre du métier
+        met_cell = Table([[Paragraph(f"  {metier}  —  {len(sub)} remarque(s)", metier_style)]],
+                         colWidths=[W - 3.6*cm])
+        met_cell.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,-1), DARK),
+            ("TOPPADDING",    (0,0), (-1,-1), 8),
+            ("BOTTOMPADDING", (0,0), (-1,-1), 8),
+            ("LEFTPADDING",   (0,0), (-1,-1), 10),
+            ("ROUNDEDCORNERS", [4]),
+        ]))
+        story.append(met_cell)
+        story.append(Spacer(1, 6))
+
+        for _, row in sub.iterrows():
+            prio = str(row.get("Priorité", "Normal"))
+            prio_fg, prio_bg = PRIO_COLOR.get(prio, (ACCENT, ACCENT_BG))
+
+            # Ligne badges
+            badge_data = [[
+                Paragraph(f"<b>{row.get('Tranche','')}</b>", ParagraphStyle("b", parent=label_style, textColor=colors.HexColor("#0C447C"), fontSize=8)),
+                Paragraph(f"<b>{row.get('Immeuble','')}</b>", ParagraphStyle("b", parent=label_style, textColor=colors.HexColor("#0C447C"), fontSize=8)),
+                Paragraph(str(row.get("Local","")), ParagraphStyle("b", parent=label_style, fontSize=8)),
+                Paragraph(str(row.get("Zone","")) if row.get("Zone","") else "", ParagraphStyle("b", parent=label_style, textColor=colors.HexColor("#633806"), fontSize=8)),
+                Paragraph(f"<b>{prio}</b>", ParagraphStyle("b", parent=label_style, textColor=prio_fg, fontSize=8, alignment=TA_RIGHT)),
+                Paragraph(f"{row.get('Date','')} {row.get('Heure','')}", ParagraphStyle("b", parent=label_style, textColor=colors.HexColor("#888888"), fontSize=7, alignment=TA_RIGHT)),
+            ]]
+            cw = (W - 3.6*cm)
+            badge_t = Table(badge_data, colWidths=[cw*0.1, cw*0.12, cw*0.22, cw*0.24, cw*0.15, cw*0.17])
+            badge_t.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,-1), GRAY_BG),
+                ("TOPPADDING",    (0,0), (-1,-1), 4),
+                ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+                ("LEFTPADDING",   (0,0), (-1,-1), 5),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 5),
+                ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ]))
+
+            # Désignation + commentaire
+            desig = Paragraph(f"<b>{row.get('Désignation','')}</b>", value_style)
+            comm_text = str(row.get("Commentaire","")).strip()
+            commentaire_p = Paragraph(comm_text if comm_text else "—", comment_style) if comm_text else None
+
+            saisi = Paragraph(f"Saisi par : {row.get('Saisi_par','—')}", label_style)
+
+            block = [badge_t, Spacer(1,4), desig]
+            if commentaire_p:
+                block.append(commentaire_p)
+
+            # Photos base64
+            photos_b64_raw = str(row.get("Photos_Base64", "")).strip()
+            if photos_b64_raw and photos_b64_raw != "nan":
+                b64_list = [p.strip() for p in photos_b64_raw.split("||") if p.strip()]
+                if b64_list:
+                    photo_cells = []
+                    for b64str in b64_list[:4]:  # max 4 photos par remarque
+                        try:
+                            img_data = base64.b64decode(b64str)
+                            img_buf = io.BytesIO(img_data)
+                            rl_img = RLImage(img_buf, width=3.5*cm, height=3.5*cm)
+                            rl_img.hAlign = "LEFT"
+                            photo_cells.append(rl_img)
+                        except Exception:
+                            pass
+                    if photo_cells:
+                        # Remplir jusqu'à 4 colonnes
+                        while len(photo_cells) < 4:
+                            photo_cells.append(Paragraph("", label_style))
+                        photo_table = Table([photo_cells], colWidths=[(W - 3.6*cm)/4]*4)
+                        photo_table.setStyle(TableStyle([
+                            ("VALIGN", (0,0), (-1,-1), "TOP"),
+                            ("LEFTPADDING",   (0,0), (-1,-1), 2),
+                            ("RIGHTPADDING",  (0,0), (-1,-1), 2),
+                            ("TOPPADDING",    (0,0), (-1,-1), 4),
+                            ("BOTTOMPADDING", (0,0), (-1,-1), 4),
+                        ]))
+                        block.append(photo_table)
+
+            block.append(saisi)
+
+            # Encadrement complet de la remarque
+            remark_table = Table([[item] for item in block], colWidths=[W - 3.6*cm])
+            remark_table.setStyle(TableStyle([
+                ("BOX", (0,0), (-1,-1), 0.5, colors.HexColor("#cccccc")),
+                ("LEFTPADDING",   (0,0), (-1,-1), 8),
+                ("RIGHTPADDING",  (0,0), (-1,-1), 8),
+                ("TOPPADDING",    (0,0), (0,0), 0),
+                ("BOTTOMPADDING", (0,-1), (-1,-1), 6),
+                ("BACKGROUND", (0,-1), (-1,-1), colors.white),
+            ]))
+
+            story.append(KeepTogether([remark_table, Spacer(1, 6)]))
+
+        story.append(Spacer(1, 8))
+        story.append(HRFlowable(width="100%", thickness=0.4, color=colors.HexColor("#dddddd")))
+        story.append(Spacer(1, 8))
+
+    # ── Pied de page ───────────────────────────
+    story.append(Spacer(1, 10))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=ACCENT))
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(
+        f"Rapport généré automatiquement — Portail Contrôle Qualité Chantier — {date_str}",
+        footer_style
+    ))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
+
 
 # ─────────────────────────────────────────────
-#  SIDEBAR NAVIGATION
+#  SIDEBAR
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
@@ -317,15 +501,8 @@ with st.sidebar:
         <div style='font-size:0.75rem; color:#888;'>Chantier – Suivi des remarques</div>
     </div>
     """, unsafe_allow_html=True)
-
     st.divider()
-
-    page = st.radio(
-        "Navigation",
-        ["📋 Saisie remarque", "📊 Rapport / Consultation", "📤 Export"],
-        label_visibility="collapsed",
-    )
-
+    page = st.radio("Navigation", ["📋 Saisie remarque", "📊 Rapport / Consultation", "📤 Export PDF"], label_visibility="collapsed")
     st.divider()
     st.markdown("<div style='font-size:0.75rem;color:#888;'>Saisi par :</div>", unsafe_allow_html=True)
     user_name = st.text_input("", placeholder="Votre nom", label_visibility="collapsed")
@@ -351,7 +528,6 @@ if page == "📋 Saisie remarque":
     st.markdown("<div class='section-header'>📋 Nouvelle remarque qualité</div>", unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns(3)
-
     with col1:
         tranche = st.selectbox("Tranche", list(STRUCTURE.keys()))
     with col2:
@@ -373,15 +549,18 @@ if page == "📋 Saisie remarque":
         priorite_raw = st.selectbox("Priorité", list(PRIORITES.keys()))
         priorite = PRIORITES[priorite_raw]
 
-    designation = st.text_input("Désignation / Nature du défaut *", placeholder="Ex: Fissure plafond, joint manquant, prise non fonctionnelle…")
-    commentaire = st.text_area("Commentaire détaillé", placeholder="Décrivez précisément le problème, son emplacement, son état…", height=100)
+    designation = st.text_input("Désignation / Nature du défaut *",
+        placeholder="Ex : Fissure au plafond, joint manquant, prise non fonctionnelle…")
+    commentaire = st.text_area("Commentaire détaillé",
+        placeholder="Décrivez précisément le problème, son emplacement, son état…",
+        height=100)
 
     st.markdown("**📷 Photos**")
     photos_uploaded = st.file_uploader(
-        "Ajouter des photos (depuis la galerie ou l'appareil photo)",
+        "Ajouter des photos (galerie ou appareil photo)",
         type=["jpg", "jpeg", "png", "webp"],
         accept_multiple_files=True,
-        help="Sur mobile, vous pouvez prendre une photo directement.",
+        help="Sur mobile, vous pouvez prendre une photo directement depuis l'appareil.",
     )
 
     if photos_uploaded:
@@ -396,25 +575,20 @@ if page == "📋 Saisie remarque":
     if st.button("💾 Enregistrer la remarque", type="primary", use_container_width=True):
         if not designation.strip():
             st.error("⚠️ La désignation est obligatoire.")
-        elif not metier:
-            st.error("⚠️ Choisissez un corps de métier.")
         else:
             with st.spinner("Enregistrement en cours…"):
                 now = datetime.now()
                 remark_id = now.strftime("%Y%m%d%H%M%S")
 
-                # Upload photos to Drive
-                photo_urls = []
+                # Encode photos en base64 séparées par "||"
+                b64_parts = []
                 if photos_uploaded:
-                    try:
-                        folder_id = st.secrets["DRIVE_FOLDER_ID"]
-                        for photo in photos_uploaded:
-                            ext = photo.name.split(".")[-1]
-                            fname = f"QC_{remark_id}_{photo.name}"
-                            url = upload_photo_to_drive(photo.getvalue(), fname, folder_id)
-                            photo_urls.append(url)
-                    except Exception as e:
-                        st.warning(f"Photos non uploadées (Drive): {e}")
+                    for photo in photos_uploaded:
+                        try:
+                            b64 = image_to_base64(photo.getvalue())
+                            b64_parts.append(b64)
+                        except Exception as e:
+                            st.warning(f"Photo ignorée : {e}")
 
                 row = {
                     "id": remark_id,
@@ -428,12 +602,14 @@ if page == "📋 Saisie remarque":
                     "priorite": priorite,
                     "designation": designation.strip(),
                     "commentaire": commentaire.strip(),
-                    "photos_urls": " | ".join(photo_urls),
+                    "photos_b64": "||".join(b64_parts),
+                    "nb_photos": len(b64_parts),
                     "saisi_par": user_name.strip() if user_name else "—",
                 }
                 try:
                     save_remark_to_sheet(row)
-                    st.success("✅ Remarque enregistrée avec succès dans Google Sheets !")
+                    load_remarks_from_sheet.clear()
+                    st.success(f"✅ Remarque enregistrée avec succès dans Google Sheets ! ({len(b64_parts)} photo(s))")
                     st.balloons()
                 except Exception as e:
                     st.error(f"Erreur Google Sheets : {e}")
@@ -455,7 +631,6 @@ elif page == "📊 Rapport / Consultation":
         st.info("Aucune remarque enregistrée pour le moment.")
         st.stop()
 
-    # ── Filters ──────────────────────────────
     fc1, fc2, fc3, fc4 = st.columns(4)
     with fc1:
         f_tranche = st.selectbox("Tranche", ["Toutes"] + sorted(df["Tranche"].dropna().unique().tolist()))
@@ -471,10 +646,10 @@ elif page == "📊 Rapport / Consultation":
     f_search = st.text_input("🔍 Rechercher dans désignation / commentaire", "")
 
     dff = df.copy()
-    if f_tranche != "Toutes":   dff = dff[dff["Tranche"] == f_tranche]
-    if f_imm != "Tous":         dff = dff[dff["Immeuble"] == f_imm]
-    if f_metier != "Tous":      dff = dff[dff["Métier"] == f_metier]
-    if f_prio != "Toutes":      dff = dff[dff["Priorité"] == f_prio]
+    if f_tranche != "Toutes":  dff = dff[dff["Tranche"] == f_tranche]
+    if f_imm != "Tous":        dff = dff[dff["Immeuble"] == f_imm]
+    if f_metier != "Tous":     dff = dff[dff["Métier"] == f_metier]
+    if f_prio != "Toutes":     dff = dff[dff["Priorité"] == f_prio]
     if f_search:
         mask = (
             dff["Désignation"].str.contains(f_search, case=False, na=False) |
@@ -482,7 +657,6 @@ elif page == "📊 Rapport / Consultation":
         )
         dff = dff[mask]
 
-    # ── KPIs ─────────────────────────────────
     k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
         st.markdown(f"<div class='metric-card'><div class='num'>{len(dff)}</div><div class='lbl'>Total remarques</div></div>", unsafe_allow_html=True)
@@ -490,31 +664,24 @@ elif page == "📊 Rapport / Consultation":
         urgent = len(dff[dff["Priorité"] == "Urgent"]) if "Priorité" in dff.columns else 0
         st.markdown(f"<div class='metric-card'><div class='num' style='color:#A32D2D'>{urgent}</div><div class='lbl'>Urgentes</div></div>", unsafe_allow_html=True)
     with k3:
-        nb_imm = dff["Immeuble"].nunique()
-        st.markdown(f"<div class='metric-card'><div class='num'>{nb_imm}</div><div class='lbl'>Immeubles</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='metric-card'><div class='num'>{dff['Immeuble'].nunique()}</div><div class='lbl'>Immeubles</div></div>", unsafe_allow_html=True)
     with k4:
-        nb_met = dff["Métier"].nunique()
-        st.markdown(f"<div class='metric-card'><div class='num'>{nb_met}</div><div class='lbl'>Corps de métier</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='metric-card'><div class='num'>{dff['Métier'].nunique()}</div><div class='lbl'>Corps de métier</div></div>", unsafe_allow_html=True)
     with k5:
-        with_photos = dff["Photos_URLs"].apply(lambda x: bool(str(x).strip())).sum()
+        with_photos = dff["Nb_Photos"].apply(lambda x: int(str(x)) > 0 if str(x).isdigit() else False).sum()
         st.markdown(f"<div class='metric-card'><div class='num'>{with_photos}</div><div class='lbl'>Avec photos</div></div>", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # ── Group by Métier ───────────────────────
     if dff.empty:
         st.warning("Aucune remarque ne correspond aux filtres sélectionnés.")
     else:
-        metiers_in_df = sorted(dff["Métier"].dropna().unique())
-        for met in metiers_in_df:
+        for met in sorted(dff["Métier"].dropna().unique()):
             sub = dff[dff["Métier"] == met]
             with st.expander(f"**{met}** — {len(sub)} remarque(s)", expanded=True):
                 for _, row in sub.iterrows():
-                    prio_color = {"Urgent": "#A32D2D", "Normal": "#BA7517", "Mineur": "#1D9E75"}.get(row.get("Priorité", ""), "#888")
-                    prio_label = row.get("Priorité", "")
-                    photos_urls_raw = str(row.get("Photos_URLs", "")).strip()
-                    photo_list = [u.strip() for u in photos_urls_raw.split("|") if u.strip()] if photos_urls_raw else []
-
+                    prio = row.get("Priorité", "Normal")
+                    prio_color = {"Urgent": "#A32D2D", "Normal": "#BA7517", "Mineur": "#1D9E75"}.get(prio, "#888")
                     st.markdown(f"""
                     <div class='remark-card'>
                       <div style='margin-bottom:6px'>
@@ -522,29 +689,37 @@ elif page == "📊 Rapport / Consultation":
                         <span class='badge badge-imm'>{row.get('Immeuble','')}</span>
                         <span class='badge badge-apt'>{row.get('Local','')}</span>
                         {f"<span class='badge badge-zone'>{row.get('Zone','')}</span>" if row.get('Zone','') else ""}
-                        <span style='margin-left:auto; float:right; font-size:0.75rem; color:#888'>{row.get('Date','')} {row.get('Heure','')}</span>
-                        <span class='badge' style='background:{prio_color}20;color:{prio_color};float:right;margin-right:8px'>{prio_label}</span>
+                        <span style='float:right;font-size:0.75rem;color:#888'>{row.get('Date','')} {row.get('Heure','')}</span>
+                        <span class='badge' style='background:{prio_color}20;color:{prio_color};float:right;margin-right:8px'>{prio}</span>
                       </div>
-                      <div style='font-weight:600; font-size:0.95rem; margin-bottom:4px'>{row.get('Désignation','')}</div>
-                      <div style='font-size:0.87rem; color:#444; line-height:1.5'>{row.get('Commentaire','')}</div>
-                      <div style='font-size:0.75rem; color:#aaa; margin-top:6px'>Saisi par : {row.get('Saisi_par','—')}</div>
+                      <div style='font-weight:600;font-size:0.95rem;margin-bottom:4px'>{row.get('Désignation','')}</div>
+                      <div style='font-size:0.87rem;color:#444;line-height:1.5'>{row.get('Commentaire','')}</div>
+                      <div style='font-size:0.75rem;color:#aaa;margin-top:6px'>Saisi par : {row.get('Saisi_par','—')}</div>
                     </div>
                     """, unsafe_allow_html=True)
 
-                    if photo_list:
-                        cols = st.columns(min(len(photo_list), 4))
-                        for i, url in enumerate(photo_list):
-                            with cols[i % 4]:
-                                st.image(url, width=120)
-
+                    # Afficher les photos base64
+                    photos_raw = str(row.get("Photos_Base64", "")).strip()
+                    if photos_raw and photos_raw not in ("", "nan"):
+                        b64_list = [p.strip() for p in photos_raw.split("||") if p.strip()]
+                        if b64_list:
+                            pcols = st.columns(min(len(b64_list), 4))
+                            for i, b64 in enumerate(b64_list[:4]):
+                                with pcols[i]:
+                                    try:
+                                        img_data = base64.b64decode(b64)
+                                        img = Image.open(io.BytesIO(img_data))
+                                        st.image(img, use_container_width=True)
+                                    except Exception:
+                                        pass
                     st.markdown("<hr style='margin:6px 0;border:none;border-top:1px solid #f0f0f0'>", unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════
-#  PAGE 3 — EXPORT
+#  PAGE 3 — EXPORT PDF
 # ══════════════════════════════════════════════
-elif page == "📤 Export":
-    st.markdown("<div class='section-header'>📤 Export des données</div>", unsafe_allow_html=True)
+elif page == "📤 Export PDF":
+    st.markdown("<div class='section-header'>📤 Export du rapport en PDF</div>", unsafe_allow_html=True)
 
     try:
         df = load_remarks_from_sheet()
@@ -556,7 +731,8 @@ elif page == "📤 Export":
         st.info("Aucune donnée à exporter.")
         st.stop()
 
-    # Filters for export
+    st.markdown("Sélectionnez un filtre (optionnel) avant de générer le PDF :")
+
     ec1, ec2, ec3 = st.columns(3)
     with ec1:
         ef_tranche = st.selectbox("Tranche", ["Toutes"] + sorted(df["Tranche"].dropna().unique().tolist()), key="ef_tranche")
@@ -572,14 +748,25 @@ elif page == "📤 Export":
 
     st.markdown(f"**{len(dfe)} remarques** correspondent à votre sélection.")
 
-    # CSV download
-    csv = dfe.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-    st.download_button(
-        "⬇️ Télécharger en CSV",
-        data=csv,
-        file_name=f"rapport_qualite_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
+    include_photos = st.checkbox("Inclure les photos dans le PDF", value=True)
 
-    st.dataframe(dfe, use_container_width=True)
+    if st.button("📄 Générer le rapport PDF", type="primary", use_container_width=True):
+        with st.spinner("Génération du PDF en cours…"):
+            df_for_pdf = dfe.copy()
+            if not include_photos:
+                df_for_pdf["Photos_Base64"] = ""
+            try:
+                pdf_bytes = generate_pdf_report(df_for_pdf, {
+                    "tranche": ef_tranche, "immeuble": ef_imm, "metier": ef_met
+                })
+                filename = f"rapport_qualite_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+                st.download_button(
+                    "⬇️ Télécharger le rapport PDF",
+                    data=pdf_bytes,
+                    file_name=filename,
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+                st.success("✅ PDF généré avec succès !")
+            except Exception as e:
+                st.error(f"Erreur lors de la génération du PDF : {e}")

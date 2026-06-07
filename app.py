@@ -289,35 +289,66 @@ def save_remark_to_sheet(row_data: dict):
 @st.cache_data(ttl=30)
 def load_remarks_from_sheet():
     ws = get_or_create_sheet()
-    data = ws.get_all_records()
-    df = pd.DataFrame(data)
+
+    # Lire toutes les valeurs brutes pour gérer colonnes vides/dupliquées
+    all_values = ws.get_all_values()
+    if not all_values or len(all_values) < 2:
+        return pd.DataFrame()
+
+    # Nettoyer la ligne d'en-tête : supprimer colonnes vides, dédupliquer
+    raw_headers = all_values[0]
+    clean_headers = []
+    seen = {}
+    for h in raw_headers:
+        h = h.strip()
+        if h == "":
+            h = f"_col_{len(clean_headers)}"
+        if h in seen:
+            seen[h] += 1
+            h = f"{h}_{seen[h]}"
+        else:
+            seen[h] = 0
+        clean_headers.append(h)
+
+    # Construire le DataFrame avec les en-têtes nettoyés
+    rows = all_values[1:]
+    # Aligner chaque ligne avec le bon nombre de colonnes
+    nb_cols = len(clean_headers)
+    padded = [r + [""] * (nb_cols - len(r)) if len(r) < nb_cols else r[:nb_cols] for r in rows]
+    df = pd.DataFrame(padded, columns=clean_headers)
+
+    # Supprimer colonnes fantômes (_col_X)
+    df = df[[c for c in df.columns if not c.startswith("_col_")]]
+
+    # Supprimer lignes complètement vides
+    df = df[df.apply(lambda r: r.astype(str).str.strip().ne("").any(), axis=1)].reset_index(drop=True)
+
     if df.empty:
         return df
-    # Normalize column names — map whatever is in Sheet to standard names
+
+    # Normaliser les noms de colonnes vers les noms standards
     col_map = {
-        # Noms de colonnes possibles → noms standards utilisés dans le code
         "Metier": "Métier", "métier": "Métier", "METIER": "Métier",
         "Priorite": "Priorité", "priorité": "Priorité", "PRIORITE": "Priorité",
         "Designation": "Désignation", "désignation": "Désignation", "DESIGNATION": "Désignation",
-        "Commentaire": "Commentaire",
         "Saisi_par": "Saisi_par", "saisi_par": "Saisi_par",
-        # Toutes les variantes possibles du champ photos
         "Photos_URLs": "Photos_B64",
         "Photos_URL": "Photos_B64",
         "Photos_Base64": "Photos_B64",
         "photos_b64": "Photos_B64",
         "Photos_b64": "Photos_B64",
         "PHOTOS": "Photos_B64",
-        # Nb photos
         "Nb_photos": "Nb_Photos", "nb_photos": "Nb_Photos", "NB_PHOTOS": "Nb_Photos",
     }
     df = df.rename(columns=col_map)
-    # Ensure all expected columns exist
+
+    # S'assurer que toutes les colonnes nécessaires existent
     for col in ["Métier", "Priorité", "Désignation", "Commentaire",
                 "Photos_B64", "Nb_Photos", "Saisi_par", "Zone",
                 "Tranche", "Immeuble", "Local", "Date", "Heure"]:
         if col not in df.columns:
             df[col] = ""
+
     return df
 
 # ─────────────────────────────────────────────

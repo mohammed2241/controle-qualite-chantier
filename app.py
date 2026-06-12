@@ -254,37 +254,46 @@ def image_to_base64(img_bytes: bytes, max_size: int = 600) -> str:
         img.save(buf, format="JPEG", quality=35)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
+def clean_cell(val):
+    """Nettoie une valeur pour éviter les décalages dans Google Sheets."""
+    if val is None:
+        return ""
+    # Supprimer sauts de ligne, tabulations et retours chariot qui décalent les cellules
+    return str(val).replace("\n", " ").replace("\r", " ").replace("\t", " ").strip()
+
 def save_remark_to_sheet(row_data: dict):
     ws = get_or_create_sheet()
-    # Chaque photo JPEG 800px ~ 30-50KB en base64. On limite à 1 photo si trop grand
+    # Limiter les photos en base64 à 45000 chars max (sécurité cellule Sheets)
     photos_b64 = row_data.get("photos_b64", "")
     parts = [p for p in photos_b64.split("||") if p.strip()]
-    # Garder au max ce qui tient dans 49000 chars (limite cellule Google Sheets)
     kept = []
     total = 0
     for p in parts:
-        if total + len(p) < 49000:
+        if total + len(p) < 45000:
             kept.append(p)
             total += len(p)
         else:
             break
     photos_b64_safe = "||".join(kept)
-    ws.append_row([
-        row_data.get("id", ""),
-        row_data.get("date", ""),
-        row_data.get("heure", ""),
-        row_data.get("tranche", ""),
-        row_data.get("immeuble", ""),
-        row_data.get("local", ""),
-        row_data.get("zone", ""),
-        row_data.get("metier", ""),
-        row_data.get("priorite", ""),
-        row_data.get("designation", ""),
-        row_data.get("commentaire", ""),
+
+    row = [
+        clean_cell(row_data.get("id", "")),
+        clean_cell(row_data.get("date", "")),
+        clean_cell(row_data.get("heure", "")),
+        clean_cell(row_data.get("tranche", "")),
+        clean_cell(row_data.get("immeuble", "")),
+        clean_cell(row_data.get("local", "")),
+        clean_cell(row_data.get("zone", "")),
+        clean_cell(row_data.get("metier", "")),
+        clean_cell(row_data.get("priorite", "")),
+        clean_cell(row_data.get("designation", "")),
+        clean_cell(row_data.get("commentaire", "")),
         photos_b64_safe,
         len(kept),
-        row_data.get("saisi_par", "—"),
-    ])
+        clean_cell(row_data.get("saisi_par", "—")),
+    ]
+    # value_input_option="RAW" pour éviter toute interprétation de formule ou saut de ligne
+    ws.append_row(row, value_input_option="RAW")
 
 @st.cache_data(ttl=30)
 def load_remarks_from_sheet():
@@ -428,6 +437,8 @@ def generate_pdf_report(df: pd.DataFrame, filters: dict) -> bytes:
         filter_parts.append(f"Tranche : {filters['tranche']}")
     if filters.get("immeuble") and filters["immeuble"] != "Tous":
         filter_parts.append(f"Immeuble : {filters['immeuble']}")
+    if filters.get("appartement") and filters["appartement"] != "Tous":
+        filter_parts.append(f"Appartement : {filters['appartement']}")
     if filters.get("metier") and filters["metier"] != "Tous":
         filter_parts.append(f"Métier : {filters['metier']}")
     if filter_parts:
@@ -822,14 +833,26 @@ elif page == "📤 Export PDF":
     with ec1:
         ef_tranche = st.selectbox("Tranche", ["Toutes"] + sorted(df["Tranche"].dropna().unique().tolist()), key="ef_tranche")
     with ec2:
-        ef_imm = st.selectbox("Immeuble", ["Tous"] + sorted(df["Immeuble"].dropna().unique().tolist()), key="ef_imm")
+        imm_opts_e = df["Immeuble"].dropna().unique().tolist() if ef_tranche == "Toutes"                      else df[df["Tranche"] == ef_tranche]["Immeuble"].dropna().unique().tolist()
+        ef_imm = st.selectbox("Immeuble", ["Tous"] + sorted(imm_opts_e), key="ef_imm")
     with ec3:
         ef_met = st.selectbox("Métier", ["Tous"] + sorted(df["Métier"].dropna().unique().tolist()), key="ef_met")
 
-    dfe = df.copy()
-    if ef_tranche != "Toutes": dfe = dfe[dfe["Tranche"] == ef_tranche]
-    if ef_imm != "Tous":       dfe = dfe[dfe["Immeuble"] == ef_imm]
-    if ef_met != "Tous":       dfe = dfe[dfe["Métier"] == ef_met]
+    # Filtre appartement (dépend de tranche + immeuble)
+    dfe_pre = df.copy()
+    if ef_tranche != "Toutes": dfe_pre = dfe_pre[dfe_pre["Tranche"] == ef_tranche]
+    if ef_imm != "Tous":       dfe_pre = dfe_pre[dfe_pre["Immeuble"] == ef_imm]
+    apt_opts = dfe_pre["Local"].dropna().unique().tolist()
+
+    ef_apt = st.selectbox(
+        "Appartement / Local",
+        ["Tous"] + sorted(apt_opts),
+        key="ef_apt"
+    )
+
+    dfe = dfe_pre.copy()
+    if ef_met != "Tous": dfe = dfe[dfe["Métier"] == ef_met]
+    if ef_apt != "Tous": dfe = dfe[dfe["Local"] == ef_apt]
 
     st.markdown(f"**{len(dfe)} remarques** correspondent à votre sélection.")
 
@@ -839,10 +862,11 @@ elif page == "📤 Export PDF":
         with st.spinner("Génération du PDF en cours…"):
             df_for_pdf = dfe.copy()
             if not include_photos:
-                df_for_pdf["Photos_Base64"] = ""
+                df_for_pdf["Photos_B64"] = ""
             try:
                 pdf_bytes = generate_pdf_report(df_for_pdf, {
-                    "tranche": ef_tranche, "immeuble": ef_imm, "metier": ef_met
+                    "tranche": ef_tranche, "immeuble": ef_imm,
+                    "metier": ef_met, "appartement": ef_apt
                 })
                 filename = f"rapport_qualite_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
                 st.download_button(
